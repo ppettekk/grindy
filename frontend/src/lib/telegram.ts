@@ -32,6 +32,13 @@ export function tgUser():
   return tg()?.initDataUnsafe?.user;
 }
 
+/** start_param из Telegram deep link (?startapp=...). Полезен для открытия
+ *  конкретной вакансии из пуш-уведомления бота. */
+export function tgStartParam(): string | undefined {
+  const p = tg()?.initDataUnsafe?.start_param;
+  return typeof p === "string" && p ? p : undefined;
+}
+
 export function haptic(kind: "light" | "medium" | "heavy" | "rigid" | "soft" = "light"): void {
   try {
     tg()?.HapticFeedback?.impactOccurred(kind);

@@ -8,9 +8,15 @@ export function Toggle({ on, onChange, ariaLabel }: Props) {
   return (
     <button
       role="switch"
+      type="button"
       aria-checked={on}
       aria-label={ariaLabel}
-      onClick={() => onChange(!on)}
+      onClick={(e) => {
+        // Тумблер часто живёт внутри clickable Row — не даём клику
+        // пробрасываться, иначе Row тоже сработает и состояние «дёрнется».
+        e.stopPropagation();
+        onChange(!on);
+      }}
       className="relative transition-colors"
       style={{
         width: 44,

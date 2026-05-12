@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,6 +24,15 @@ class Settings(BaseSettings):
     webapp_url: str = Field(
         default="https://grindy.ru/app", validation_alias="WEBAPP_URL"
     )
+    # Юзернейм бота без @. Используется для deep-link на WebApp в уведомлениях.
+    bot_username: str = Field(
+        default="grindyworkbot", validation_alias="BOT_USERNAME"
+    )
+    # Short name WebApp, заданный через @BotFather (/setdomain / /newapp).
+    # Финальная ссылка: t.me/<bot_username>/<webapp_short_name>?startapp=...
+    webapp_short_name: str = Field(
+        default="app", validation_alias="WEBAPP_SHORT_NAME"
+    )
     bot_proxy: str = Field(default="", validation_alias="BOT_PROXY")
     require_channel: str = Field(
         default="@grindywork", validation_alias="REQUIRE_CHANNEL"
@@ -43,10 +53,28 @@ class Settings(BaseSettings):
         default=3, validation_alias="REPORT_AUTOHIDE_THRESHOLD"
     )
 
-    # AI
-    # Один ключ (legacy). Используется как fallback к GEMINI_API_KEYS.
+    # ── LLM provider ──────────────────────────────────────────────────
+    llm_provider: Literal["deepseek", "openai", "gemini", "closerouter"] = Field(
+        default="deepseek", validation_alias="LLM_PROVIDER"
+    )
+    llm_api_key: str = Field(default="", validation_alias="LLM_API_KEY")
+    llm_api_keys_raw: str = Field(default="", validation_alias="LLM_API_KEYS")
+    llm_model: str = Field(default="", validation_alias="LLM_MODEL")
+    llm_base_url: str = Field(default="", validation_alias="LLM_BASE_URL")
+
+    llm_enabled: bool = Field(default=True, validation_alias="LLM_ENABLED")
+    llm_max_calls_per_ingest: int = Field(
+        default=30, validation_alias="LLM_MAX_CALLS_PER_INGEST"
+    )
+    llm_min_confidence: float = Field(
+        default=0.7, validation_alias="LLM_MIN_CONFIDENCE"
+    )
+    llm_timeout_sec: float = Field(
+        default=8.0, validation_alias="LLM_TIMEOUT_SEC"
+    )
+
+    # Legacy Gemini
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
-    # Несколько ключей через запятую — при квотах/блокировках идёт ротация.
     gemini_api_keys_raw: str = Field(
         default="", validation_alias="GEMINI_API_KEYS"
     )
@@ -55,48 +83,54 @@ class Settings(BaseSettings):
     )
 
     @property
-    def gemini_keys(self) -> list[str]:
-        """Объединённый список ключей: GEMINI_API_KEYS (CSV) + GEMINI_API_KEY (legacy).
-
-        Дубликаты и пустые значения убираются; порядок сохраняется.
-        """
+    def llm_keys(self) -> list[str]:
         out: list[str] = []
         seen: set[str] = set()
-        for raw in (self.gemini_api_keys_raw or "").split(","):
-            k = raw.strip()
+
+        def _add_csv(raw: str) -> None:
+            for k in (raw or "").split(","):
+                k = k.strip()
+                if k and k not in seen:
+                    out.append(k); seen.add(k)
+
+        def _add_one(k: str) -> None:
+            k = (k or "").strip()
             if k and k not in seen:
-                out.append(k)
-                seen.add(k)
-        legacy = (self.gemini_api_key or "").strip()
-        if legacy and legacy not in seen:
-            out.append(legacy)
-            seen.add(legacy)
+                out.append(k); seen.add(k)
+
+        _add_csv(self.llm_api_keys_raw)
+        _add_one(self.llm_api_key)
+        if self.llm_provider == "gemini":
+            _add_csv(self.gemini_api_keys_raw)
+            _add_one(self.gemini_api_key)
         return out
 
-    # LLM-классификатор аудитории/категории. Гоняется только на «сомнительных»
-    # вакансиях, чтобы экономить API-кредиты. См. services/llm_classify.py.
-    llm_enabled: bool = Field(default=True, validation_alias="LLM_ENABLED")
-    # Жёсткий потолок LLM-вызовов за один прогон ingest — защита от внезапных
-    # счетов при потоке новых вакансий.
-    llm_max_calls_per_ingest: int = Field(
-        default=30, validation_alias="LLM_MAX_CALLS_PER_INGEST"
-    )
-    # Минимальный confidence ответа LLM, чтобы перезаписать локальную
-    # классификацию. Ниже — оставляем локальный результат.
-    llm_min_confidence: float = Field(
-        default=0.7, validation_alias="LLM_MIN_CONFIDENCE"
-    )
-    # Таймаут одного LLM-вызова в секундах.
-    llm_timeout_sec: float = Field(
-        default=8.0, validation_alias="LLM_TIMEOUT_SEC"
-    )
+    @property
+    def llm_effective_model(self) -> str:
+        if self.llm_model.strip():
+            return self.llm_model.strip()
+        return {
+            "deepseek": "deepseek-chat",
+            "openai": "gpt-4o-mini",
+            "gemini": self.gemini_model or "gemini-2.5-flash",
+            "closerouter": "anthropic/claude-haiku-4.5",
+        }.get(self.llm_provider, "deepseek-chat")
+
+    @property
+    def llm_effective_base_url(self) -> str:
+        if self.llm_base_url.strip():
+            return self.llm_base_url.strip().rstrip("/")
+        return {
+            "deepseek": "https://api.deepseek.com",
+            "openai": "https://api.openai.com/v1",
+            "closerouter": "https://api.closerouter.dev/v1",
+        }.get(self.llm_provider, "")
 
     # Sources
     superjob_api_key: str = Field(default="", validation_alias="SUPERJOB_API_KEY")
     hh_user_agent: str = Field(
         default="Grindy/0.1 (contact@grindy.ru)", validation_alias="HH_USER_AGENT"
     )
-    # HTTP/HTTPS/SOCKS5 прокси для запросов парсеров (HH/Rabota/Avito).
     parser_proxy: str = Field(default="", validation_alias="PARSER_PROXY")
 
     # Payments

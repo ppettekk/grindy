@@ -33,12 +33,12 @@ async def pick_for_user(
         stmt = stmt.where(Vacancy.created_at >= since)
     if user.city:
         city_aliases = aliases_for(user.city) or [user.city]
-        # Город пользователя ИЛИ онлайн-вакансия ИЛИ без указанного города.
+        # Город пользователя ИЛИ онлайн-вакансия. Вакансии без города
+        # не пускаем — иначе подборка превращается в кашу из разных регионов.
         stmt = stmt.where(
             or_(
                 *(Vacancy.city.ilike(f"%{a}%") for a in city_aliases),
                 Vacancy.format == VacancyFormat.online,
-                Vacancy.city.is_(None),
             )
         )
     if user.age_filter in (14, 16, 18):
@@ -54,7 +54,12 @@ async def pick_for_user(
 
 
 def format_card(v: Vacancy) -> str:
-    """HTML-форматирование карточки вакансии для Telegram."""
+    """HTML-форматирование карточки вакансии для Telegram.
+
+    Ссылка «Открыть в Grindy» — deep link через startapp, переоткроет
+    WebApp и в нём сразу откроется DetailScreen этой вакансии.
+    Вторая ссылка «Источник →» ведёт на оригинальный сайт работодателя.
+    """
     salary = "не указана"
     if v.salary_from or v.salary_to:
         if v.salary_from and v.salary_to:
@@ -70,12 +75,18 @@ def format_card(v: Vacancy) -> str:
     city = v.city or ""
     fmt = v.format.value if hasattr(v.format, "value") else v.format
 
+    deep_link = (
+        f"https://t.me/{settings.bot_username}/{settings.webapp_short_name}"
+        f"?startapp=v_{v.id.hex}"
+    )
+
     return (
         f"<b>{_esc(v.title)}</b>\n"
         f"<i>{_esc(company)}</i>\n"
         f"💰 {_esc(salary)}\n"
         f"📍 {_esc(city)} · {_esc(fmt)} · {v.min_age}+\n"
-        f'<a href="{v.url}">Смотреть →</a>'
+        f'<a href="{deep_link}">Открыть в Grindy →</a>'
+        f' · <a href="{v.url}">источник</a>'
     )
 
 

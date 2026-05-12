@@ -97,7 +97,11 @@ async def run_ingest(session: AsyncSession, *, per_source_limit: int = 50) -> di
             stats[s][audience] += 1
 
             mod = await moderator.check(dto.title, dto.company, dto.description)
-            if mod.is_spam and mod.confidence >= 0.85:
+            # is_spam=True только если модератор ЯВНО пометил как спам.
+            # Высокая confidence на «не спам» (is_spam=False, conf=1.0)
+            # не должна превращаться в spam-флаг — это была старая бага.
+            is_spam_flag = bool(mod.is_spam) and mod.confidence >= 0.85
+            if is_spam_flag:
                 stats[s]["spam"] += 1
 
             v = Vacancy(
@@ -114,7 +118,7 @@ async def run_ingest(session: AsyncSession, *, per_source_limit: int = 50) -> di
                 category=category,
                 min_age=min_age,
                 url=dto.url,
-                is_spam=mod.confidence >= 0.85,
+                is_spam=is_spam_flag,
                 spam_confidence=mod.confidence,
                 spam_reason=mod.reason or None,
                 is_hidden=is_hidden,

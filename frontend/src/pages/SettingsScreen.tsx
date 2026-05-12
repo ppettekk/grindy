@@ -189,6 +189,7 @@ export function SettingsScreen() {
         <Row
           label="Утренняя подборка"
           sub="9:00 · топ-5 вакансий"
+          onClick={() => onToggle("notifications_morning", !(user?.notifications_morning ?? true))}
           right={
             <Toggle
               on={user?.notifications_morning ?? true}
@@ -199,6 +200,7 @@ export function SettingsScreen() {
         <Row
           label="Вечерняя подборка"
           sub="19:00 · топ-5 за день"
+          onClick={() => onToggle("notifications_evening", !(user?.notifications_evening ?? true))}
           right={
             <Toggle
               on={user?.notifications_evening ?? true}
@@ -209,6 +211,7 @@ export function SettingsScreen() {
         <Row
           label="Свежак сразу"
           sub="новые подходящие — каждые 30 мин"
+          onClick={() => onToggle("notifications_realtime", !(user?.notifications_realtime ?? false))}
           right={
             <Toggle
               on={user?.notifications_realtime ?? false}

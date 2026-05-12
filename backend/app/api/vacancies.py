@@ -95,13 +95,15 @@ async def list_vacancies(
                 )
             )
     if city:
+        # Юзер явно выбрал город — показываем только вакансии этого города
+        # или онлайн-вакансии. Вакансии без указанного города НЕ пускаем —
+        # иначе пермяк показывается москвичу.
         city_aliases = aliases_for(city)
         if city_aliases:
             stmt = stmt.where(
                 or_(
                     *(Vacancy.city.ilike(f"%{a}%") for a in city_aliases),
                     Vacancy.format == VacancyFormat.online,
-                    Vacancy.city.is_(None),
                 )
             )
     if age in (14, 16, 18):

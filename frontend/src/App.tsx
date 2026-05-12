@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "./store";
-import { initTelegram, tgUser } from "./lib/telegram";
-import { adminCheck, getSubscription, upsertUser } from "./api/client";
+import { initTelegram, tgStartParam, tgUser } from "./lib/telegram";
+import { adminCheck, getSubscription, getVacancy, upsertUser } from "./api/client";
 
 import { FeedScreen } from "./pages/FeedScreen";
 import { DetailScreen } from "./pages/DetailScreen";
@@ -32,6 +32,7 @@ export default function App() {
     setIsAdmin,
     setFilters,
     loadSaved,
+    openVacancy,
   } = useStore();
 
   const [sub, setSub] = useState<SubState>({ kind: "loading" });
@@ -65,6 +66,27 @@ export default function App() {
       console.error("upsertUser", e);
     }
     loadInitial();
+    // Если бот прислал deep link с конкретной вакансией — открываем её
+    // после первичной загрузки ленты.
+    void handleStartParam();
+  }
+
+  async function handleStartParam(): Promise<void> {
+    const sp = tgStartParam();
+    if (!sp) return;
+    // Формат: v_<hex32> (UUID без дефисов).
+    const m = /^v_([0-9a-fA-F]{32})$/.exec(sp);
+    if (!m) return;
+    const hex = m[1];
+    const uuid =
+      `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}` +
+      `-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    try {
+      const v = await getVacancy(uuid);
+      openVacancy(v);
+    } catch (e) {
+      console.warn("start_param vacancy fetch failed", e);
+    }
   }
 
   useEffect(() => {

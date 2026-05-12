@@ -1,4 +1,4 @@
-"""AI-модерация спама/MLM через Google Gemini.
+"""AI-модерация спама/MLM через LLM-провайдер (DeepSeek/OpenAI/Gemini).
 
 Возвращает {"is_spam": bool, "confidence": float 0..1, "reason": str}.
 
@@ -15,18 +15,18 @@ import logging
 from dataclasses import dataclass
 
 from ..config import settings
-from .gemini_keys import classify_error, get_pool
+from .llm_keys import call_provider, classify_error, get_pool
 
 logger = logging.getLogger(__name__)
 
 
 PROMPT = """\
-Ты модератор сайта подработки для подростков 14–18 лет. Проверь вакансию и определи, является ли она реферальной схемой, сетевым маркетингом (MLM), мошеннической или иначе непригодной для подростков.
+Ты модератор сайта подработки для подростков 14-18 лет. Проверь вакансию и определи, является ли она реферальной схемой, сетевым маркетингом (MLM), мошеннической или иначе непригодной для подростков.
 
 Признаки спама / MLM / мошенничества:
 - Упоминание партнёрской программы, реферальной ссылки, приглашения друзей
 - Курьер/доставка с подозрительно высокой оплатой и без чёткого работодателя
-- "Заработай приглашая друзей", "удалённая работа без опыта 2000+ ₽/час"
+- "Заработай приглашая друзей", "удалённая работа без опыта 2000+ руб/час"
 - Требование вложений или покупки стартового набора
 - Размытое описание без конкретного работодателя
 - Нелегальная или взрослая работа
@@ -53,16 +53,12 @@ class ModerationResult:
 
 
 class SpamModerator:
-    """Тонкая обёртка над google-generativeai с graceful-fallback."""
+    """Модерация через общий пул LLM-ключей (provider из settings.llm_provider)."""
 
     def __init__(self) -> None:
-        # Используем общий пул ключей — moderation и LLM-классификатор шарят
-        # один и тот же пул. Если ключ умрёт в одном — второй сразу узнает.
         self._pool = get_pool()
-        self._configured_key: str | None = None
-        self._model = None
         if not self._pool.available:
-            logger.info("Gemini key pool empty — spam moderation disabled")
+            logger.info("LLM key pool empty — spam moderation disabled")
 
     @property
     def available(self) -> bool:
@@ -83,39 +79,29 @@ class SpamModerator:
             description=(description or "—")[:1500],
         )
         try:
-            text = await self._generate(prompt)
+            text = await asyncio.wait_for(
+                self._generate(prompt), timeout=settings.llm_timeout_sec
+            )
+        except TimeoutError:
+            logger.warning("LLM moderator timeout")
+            return ModerationResult(False, 0.0, "timeout")
         except Exception as e:  # noqa: BLE001
-            logger.warning("Gemini call failed: %s", e)
+            logger.warning("LLM moderator failed: %s", e)
             return ModerationResult(False, 0.0, f"error: {e}")
 
         return self._parse(text)
 
     async def _generate(self, prompt: str) -> str:
-        """Вызов Gemini с авторотацией ключей при quota/invalid_key."""
-        import google.generativeai as genai
+        if not self._pool or not self._pool.available:
+            raise RuntimeError("no active LLM keys")
 
         last_err: BaseException | None = None
         for _ in range(self._pool.total_count):
             key = self._pool.current
             if key is None:
                 break
-            if key != self._configured_key:
-                genai.configure(api_key=key)
-                self._model = genai.GenerativeModel(settings.gemini_model)
-                self._configured_key = key
-
-            def _sync() -> str:
-                resp = self._model.generate_content(  # type: ignore[union-attr]
-                    prompt,
-                    generation_config={
-                        "temperature": 0.0,
-                        "response_mime_type": "application/json",
-                    },
-                )
-                return resp.text or ""
-
             try:
-                return await asyncio.to_thread(_sync)
+                return await call_provider(prompt, api_key=key)
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 kind = classify_error(e)
@@ -124,17 +110,18 @@ class SpamModerator:
                 if not self._pool.mark_failed(kind):
                     raise
 
-        raise last_err or RuntimeError("all Gemini keys exhausted")
+        raise last_err or RuntimeError("all LLM keys exhausted")
 
     @staticmethod
     def _parse(text: str) -> ModerationResult:
-        text = text.strip()
-        # Срезаем возможные ```json блоки.
+        text = (text or "").strip()
         if text.startswith("```"):
             text = text.strip("`")
-            text = text.removeprefix("json").strip()
+            if text.lower().startswith("json"):
+                text = text[4:].strip()
         try:
-            data = json.loads(text)
+            # raw_decode — игнорируем мусор после первого JSON-объекта.
+            data, _ = json.JSONDecoder().raw_decode(text)
             return ModerationResult(
                 is_spam=bool(data.get("is_spam")),
                 confidence=float(data.get("confidence", 0.0)),

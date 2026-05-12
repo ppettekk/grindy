@@ -175,30 +175,56 @@ class TrudvsemParser(BaseParser):
 
     @staticmethod
     def _extract_city(region: str | None, item: dict[str, Any]) -> str | None:
-        """Достаёт «человеческое» название города.
+        """Достаёт «человеческое» название города из вакансии Trudvsem.
 
-        Приоритеты:
-        1. `addresses.address[0].location` — первая часть до запятой (это часто прямой адрес).
-        2. region из API — обрезаем «г. » / «область».
+        Стратегия:
+        1. Перебираем `addresses.address[*].location` — у части вакансий это
+           конкретный адрес вида «г. Дмитров, ул. Ленина, 5». Берём первую
+           часть до запятой и очищаем.
+        2. Резерв — `region.name` (для городов федерального значения это
+           «г. Москва», для остальных — «Московская область»).
         """
         addresses = (item.get("addresses") or {}).get("address")
-        if isinstance(addresses, list) and addresses:
-            loc = (addresses[0] or {}).get("location") if isinstance(addresses[0], dict) else None
-            if loc:
-                first = loc.split(",")[0].strip()
-                # Убираем «г. » префиксы.
-                if first.lower().startswith("г. "):
-                    first = first[3:]
-                if first:
-                    return first
+        if isinstance(addresses, list):
+            for a in addresses:
+                if not isinstance(a, dict):
+                    continue
+                loc = a.get("location")
+                if not isinstance(loc, str) or not loc.strip():
+                    continue
+                city = _clean_city_name(loc.split(",")[0])
+                if city:
+                    return city
 
         if region:
-            cleaned = region.strip()
-            if cleaned.lower().startswith("г. "):
-                cleaned = cleaned[3:]
-            if cleaned:
-                return cleaned
+            city = _clean_city_name(region)
+            if city:
+                return city
         return None
+
+
+def _clean_city_name(raw: str) -> str | None:
+    """Чистит имя города от префиксов 'г.'/'город' и суффиксов 'обл./область'.
+
+    Примеры:
+      'г. Москва'                → 'Москва'
+      'г.Санкт-Петербург'        → 'Санкт-Петербург'
+      'город Дмитров'            → 'Дмитров'
+      'Московская область'       → 'Московская область'  (оставляем как есть)
+      'Санкт-Петербург, Невский' → 'Санкт-Петербург'
+    """
+    import re as _re
+
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    # Срезаем «г. » / «г.» / «город » в начале.
+    s = _re.sub(r"^(?:г\.?\s*|город\s+|гор\.\s*)", "", s, flags=_re.IGNORECASE)
+    # Если осталась запятая (адрес внутри уже расщеплён, но на всякий) — первая часть.
+    s = s.split(",")[0].strip()
+    # Хвостовые знаки и лишние пробелы.
+    s = _re.sub(r"\s+", " ", s).strip(" .,;")
+    return s or None
 
 
 def _safe_int(x: Any) -> int | None:

@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0A0B0D">
+
+<title>Grindy — подработка для подростков 14–18 без скама</title>
+<meta name="description" content="Агрегатор реальных подработок для школьников и студентов 14–18 лет. Свежие вакансии с hh, Авито, SuperJob и Работа.ру. AI-фильтр режет спам, MLM и «лёгкие деньги от 5000 в день».">
+<meta name="keywords" content="подработка для школьников, работа 14 лет, работа 16 лет, подработка для подростков, удалёнка для школьников, курьер 14, бариста 16, репетитор школьник">
+
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://grindy.ru/">
+<meta property="og:title" content="Grindy — подработка для подростков 14–18">
+<meta property="og:description" content="Свежие вакансии с hh, Авито и других. AI режет спам и MLM. Бесплатный Telegram-бот.">
+<meta property="og:site_name" content="Grindy">
+<meta property="og:image" content="https://grindy.ru/og.png">
+<meta property="og:locale" content="ru_RU">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Grindy — подработка для 14–18">
+<meta name="twitter:description" content="Свежие вакансии без скама. AI-фильтр. Telegram-бот.">
+<meta name="twitter:image" content="https://grindy.ru/og.png">
+
+<link rel="canonical" href="https://grindy.ru/">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "name": "Grindy",
+  "url": "https://grindy.ru",
+  "description": "Агрегатор подработок для подростков 14–18 лет в РФ.",
+  "inLanguage": "ru-RU",
+  "potentialAction": {
+    "@type": "SearchAction",
+    "target": "https://grindy.ru/app?q={search_term_string}",
+    "query-input": "required name=search_term_string"
+  }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  "name": "Grindy",
+  "url": "https://grindy.ru",
+  "logo": "https://grindy.ru/og.png",
+  "sameAs": ["https://t.me/grindywork", "https://t.me/grindyworkbot"]
+}
+</script>
+
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+*:where(:not(html)) { min-width: 0; }
+:root {
+  --bg: #0A0B0D;
+  --bg1: #111317;
+  --bg2: #181B21;
+  --border: #2A2F38;
+  --text: #F4F5F7;
+  --text-2: #A8ADB7;
+  --text-3: #6E7480;
+  --accent: #C7F751;
+  --accent-on: #0A0B0D;
+}
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Onest', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-feature-settings: "ss01" on;
+  -webkit-font-smoothing: antialiased;
+  scroll-behavior: smooth;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+body { min-height: 100vh; line-height: 1.5; word-wrap: break-word; overflow-wrap: break-word; }
+a { color: inherit; text-decoration: none; }
+img, svg { max-width: 100%; display: block; height: auto; }
+button, input, textarea { font: inherit; }
+
+.wrap {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+nav {
+  padding: 20px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.logo {
+  font-weight: 800;
+  font-size: 22px;
+  letter-spacing: -0.04em;
+  white-space: nowrap;
+}
+.logo span { color: var(--accent); }
+
+.btn-primary, .btn-secondary, .btn-on-accent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  white-space: nowrap;
+  border-radius: 14px;
+  font-weight: 700;
+  transition: opacity 0.15s, transform 0.1s;
+}
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-on);
+  padding: 14px 22px;
+  font-size: 15px;
+}
+.btn-secondary {
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 13px 20px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.btn-primary:active, .btn-secondary:active, .btn-on-accent:active {
+  opacity: 0.8;
+  transform: scale(0.98);
+}
+
+section {
+  padding: 56px 0;
+}
+
+h1 {
+  font-size: clamp(36px, 9vw, 76px);
+  font-weight: 800;
+  letter-spacing: -0.05em;
+  line-height: 1.02;
+  margin-bottom: 20px;
+  word-break: break-word;
+  hyphens: auto;
+}
+h1 em { font-style: normal; color: var(--accent); }
+
+h2 {
+  font-size: clamp(26px, 6vw, 44px);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1.05;
+  margin-bottom: 20px;
+}
+
+.hero { padding: 32px 0 64px; }
+.hero p.lead {
+  font-size: clamp(15px, 2.4vw, 20px);
+  color: var(--text-2);
+  max-width: 580px;
+  margin-bottom: 28px;
+}
+.hero-title-stack { display: block; }
+.hero-title-stack > span { display: block; }
+
+.cta-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.cta-row a { flex: 0 1 auto; }
+
+.muted { color: var(--text-3); font-size: 13px; }
+
+.grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+}
+.card {
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 22px;
+}
+.card h3 {
+  font-size: 17px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+.card p { color: var(--text-2); font-size: 14px; line-height: 1.5; }
+
+.kicker {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 14px;
+  word-break: keep-all;
+}
+
+.no-list {
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 22px;
+}
+.no-list ul { list-style: none; }
+.no-list li {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.no-list li:last-child { border-bottom: none; }
+.no-list li b { color: var(--text); font-weight: 700; }
+.no-list .x { color: #ff8a8a; flex-shrink: 0; font-weight: 700; font-size: 18px; line-height: 1; padding-top: 2px; }
+.no-list .ok { color: var(--accent); flex-shrink: 0; font-weight: 700; font-size: 16px; line-height: 1; padding-top: 2px; }
+
+.step-num {
+  font-size: 42px;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: -0.04em;
+  margin-bottom: 4px;
+  line-height: 1;
+}
+
+.faq summary {
+  cursor: pointer;
+  padding: 16px 0;
+  font-weight: 700;
+  font-size: 15px;
+  border-bottom: 1px solid var(--border);
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  line-height: 1.4;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after {
+  content: '+';
+  color: var(--text-3);
+  font-size: 22px;
+  flex-shrink: 0;
+  font-weight: 400;
+}
+.faq[open] summary::after { content: '−'; }
+.faq p {
+  color: var(--text-2);
+  padding: 8px 0 20px;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.big-cta {
+  background: var(--accent);
+  color: var(--accent-on);
+  border-radius: 22px;
+  padding: clamp(36px, 6vw, 56px) clamp(20px, 4vw, 32px);
+  text-align: center;
+}
+.big-cta h2 { color: var(--accent-on); margin-bottom: 12px; }
+.big-cta p {
+  opacity: 0.85;
+  max-width: 480px;
+  margin: 0 auto 20px;
+  font-size: clamp(14px, 1.8vw, 16px);
+  line-height: 1.5;
+}
+.btn-on-accent {
+  background: var(--accent-on);
+  color: var(--accent);
+  padding: 15px 26px;
+  font-weight: 800;
+  font-size: 15px;
+}
+
+footer {
+  padding: 40px 0 28px;
+  border-top: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 13px;
+}
+footer p { margin-top: 8px; line-height: 1.5; }
+footer .links {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+footer .links a { color: var(--text-2); }
+footer .links a:hover { color: var(--text); }
+
+/* ── Мобильные правки ─────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .wrap { padding: 0 16px; }
+  section { padding: 44px 0; }
+  .hero { padding: 24px 0 48px; }
+  .card { padding: 18px; }
+  .no-list { padding: 18px; }
+  nav { padding: 16px 0; }
+  .btn-secondary { padding: 11px 16px; font-size: 13px; }
+  .btn-primary { padding: 13px 20px; font-size: 14px; }
+  .cta-row a { flex: 1 1 auto; min-width: 0; }
+  .faq summary { font-size: 14px; padding: 14px 0; }
+  footer { padding: 32px 0 24px; }
+  footer .links { gap: 14px; }
+}
+
+@media (max-width: 380px) {
+  h1 { font-size: 34px; }
+  .hero p.lead { font-size: 14px; }
+  .card h3 { font-size: 16px; }
+  .step-num { font-size: 36px; }
+}
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <nav>
+    <div class="logo">grindy<span>.</span></div>
+    <a href="https://t.me/grindyworkbot" class="btn-secondary">Открыть в Telegram</a>
+  </nav>
+</header>
+
+<section class="hero wrap">
+  <div class="kicker">для школьников и студентов 14–18 в РФ</div>
+  <h1>
+    <span class="hero-title-stack">
+      <span>Подработка</span>
+      <span><em>без скама</em>.</span>
+    </span>
+  </h1>
+  <p class="lead">
+    Свежие вакансии с hh, Авито, SuperJob и Работа.ру. AI-фильтр режет
+    «удалёнки от 5000 в день», МЛМ и реферальные схемы. Бесплатный
+    Telegram-бот, без регистрации и спама.
+  </p>
+  <div class="cta-row">
+    <a href="https://t.me/grindyworkbot?start=landing" class="btn-primary">🚀 Начать в Telegram</a>
+    <a href="https://t.me/grindywork" class="btn-secondary">📣 Канал @grindywork</a>
+  </div>
+  <p class="muted" style="margin-top: 22px;">бесплатно · без регистрации · работает в Telegram</p>
+</section>
+
+<section class="wrap">
+  <div class="kicker">что внутри</div>
+  <h2>Реально полезное. Никакой воды.</h2>
+  <div class="grid" style="margin-top: 28px;">
+    <div class="card">
+      <h3>🔍 Лента по фильтрам</h3>
+      <p>Город, возраст (14/16/18+), формат (онлайн/офлайн), категория, минимальная зарплата. Сохраняет настройки.</p>
+    </div>
+    <div class="card">
+      <h3>🤖 AI режет спам</h3>
+      <p>Каждое объявление прогоняется через Gemini. Подозрительные помечаются, явный мусор скрывается.</p>
+    </div>
+    <div class="card">
+      <h3>🌅 Утром и вечером</h3>
+      <p>В 9:00 и 19:00 присылаем топ-5 свежих вакансий конкретно под твои фильтры. Можно отключить.</p>
+    </div>
+    <div class="card">
+      <h3>💾 Сохранёнки</h3>
+      <p>Лайкнул — не забудешь. Возвращайся когда удобно, всё на месте.</p>
+    </div>
+    <div class="card">
+      <h3>🚨 Жалобы работают</h3>
+      <p>Странная вакансия → жмёшь «пожаловаться» → 3 жалобы → автоскрытие, админ разбирается.</p>
+    </div>
+    <div class="card">
+      <h3>📣 Канал @grindywork</h3>
+      <p>Антискам-разборы, реальные истории, советы по собесам. Без морализаторства.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="kicker">наш контракт с тобой</div>
+  <h2>Чего <em style="color: #ff8a8a; font-style: normal;">не будет</em>.</h2>
+  <div class="no-list" style="margin-top: 28px;">
+    <ul>
+      <li><span class="x">×</span><div><b>«Заработай миллион в инсте за неделю».</b> Не агентим инфоцыган. Никогда.</div></li>
+      <li><span class="x">×</span><div><b>Реферальных лестниц и кешбек-сект.</b> Платят тебе — не за то, что ты привёл друзей.</div></li>
+      <li><span class="x">×</span><div><b>«Купи курс — научишься продавать воздух».</b> Тут только реальные вакансии за реальные деньги.</div></li>
+      <li><span class="x">×</span><div><b>Сбора паспорта до собеса</b> и других мутных схем.</div></li>
+      <li><span class="ok">✓</span><div><b>Только то, на что готов прийти сам.</b> Если не уверены — помечаем «проверьте».</div></li>
+    </ul>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="kicker">как это работает</div>
+  <h2>3 шага. Серьёзно.</h2>
+  <div class="grid" style="margin-top: 28px;">
+    <div class="card">
+      <div class="step-num">1</div>
+      <h3>Открыл бота</h3>
+      <p>Жмёшь «Начать», за 30 секунд указываешь город, возраст и что интересно.</p>
+    </div>
+    <div class="card">
+      <div class="step-num">2</div>
+      <h3>Открыл ленту</h3>
+      <p>WebApp с лентой свежих вакансий под твои фильтры. Сохраняй интересные.</p>
+    </div>
+    <div class="card">
+      <div class="step-num">3</div>
+      <h3>Откликнулся</h3>
+      <p>Прямой переход на оригинал — hh, Авито, и т.д. Дальше — между тобой и работодателем.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>FAQ</h2>
+  <div style="margin-top: 16px;">
+    <details class="faq">
+      <summary>Это бесплатно?</summary>
+      <p>Да, для соискателей сервис полностью бесплатный. Доходы — от платных размещений работодателей.</p>
+    </details>
+    <details class="faq">
+      <summary>Безопасно ли это для подростков?</summary>
+      <p>Все вакансии — публичные с открытых источников (hh, Авито, SuperJob, Работа.ру). Мы не запрашиваем паспорт, не передаём контакты работодателям. Откликаешься напрямую через ссылку.</p>
+    </details>
+    <details class="faq">
+      <summary>Почему обязательная подписка на канал?</summary>
+      <p>В канале — антискам-разборы, советы и истории, которые в WebApp не помещаются. Это часть сервиса. Канал реально полезный, не мусор. Если не нравится — отписаться можно в любой момент.</p>
+    </details>
+    <details class="faq">
+      <summary>А с 14 лет реально что-то найти?</summary>
+      <p>Да. Курьеры (с 14 в некоторых компаниях с разрешением родителей), промоутеры, подработка в кафе с 16, репетиторство, удалёнки в IT/дизайне. Каждая вакансия помечена минимальным возрастом.</p>
+    </details>
+    <details class="faq">
+      <summary>Откуда вакансии?</summary>
+      <p>Парсим hh.ru, Авито, SuperJob и Работа.ру каждый час. Также принимаем прямые размещения от проверенных работодателей.</p>
+    </details>
+    <details class="faq">
+      <summary>Я работодатель — как разместить?</summary>
+      <p>В WebApp есть раздел для работодателей с тарифами. Или напишите в @grindywork.</p>
+    </details>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="big-cta">
+    <h2>Готов начать?</h2>
+    <p>Открой Telegram, нажми кнопку — за 30 секунд получишь ленту реальных вакансий под себя.</p>
+    <a href="https://t.me/grindyworkbot?start=landing" class="btn-on-accent">Открыть Grindy в Telegram</a>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="logo">grindy<span>.</span></div>
+    <p>Агрегатор подработок для подростков 14–18 в РФ.</p>
+    <div class="links">
+      <a href="https://t.me/grindyworkbot">Telegram-бот</a>
+      <a href="https://t.me/grindywork">Канал</a>
+      <a href="/app">WebApp</a>
+      <a href="mailto:contact@grindy.ru">Связаться</a>
+    </div>
+    <p style="margin-top: 22px; font-size: 12px;">
+      © 2026 Grindy. Не работодатель, агрегатор объявлений. Ответственность за содержание вакансий несут источники.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

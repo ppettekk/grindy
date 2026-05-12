@@ -1,0 +1,46 @@
+# Caddy для grindy.ru за Cloudflare с Origin Cert.
+#
+# Файлы:
+#   /srv/app/index.html           — WebApp HTML
+#   /srv/app/assets/...           — WebApp статика (vite.config base="/app/")
+#   /srv/landing/index.html       — SEO-лендинг
+
+grindy.ru, www.grindy.ru {
+	tls /etc/caddy/cf/grindy.ru.crt /etc/caddy/cf/grindy.ru.key
+
+	encode zstd gzip
+
+	# API
+	@api {
+		path /api/* /docs /redoc /openapi.json /health
+	}
+	handle @api {
+		reverse_proxy backend:8000
+	}
+
+	# WebApp под /app — root = /srv, чтобы /app/assets/x.css → /srv/app/assets/x.css.
+	# SPA fallback на /app/index.html для несуществующих путей.
+	handle /app* {
+		root * /srv
+		try_files {path} /app/index.html
+		file_server
+	}
+
+	# Лендинг — корень.
+	handle {
+		root * /srv/landing
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

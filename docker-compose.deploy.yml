@@ -1,0 +1,82 @@
+# Deploy-стек: тянет готовые образы из приватного Container Registry.
+# Используется CI/CD пайплайном (.gitlab-ci.yml).
+#
+# Переменные приходят из двух env-файлов:
+#   .env         — секреты приложения (BOT_TOKEN, GEMINI_API_KEY и т.д.)
+#   .env.deploy  — теги образов и адрес реестра (создаётся CI на сервере):
+#       IMAGE_TAG=<short-sha>
+#       REGISTRY_IMAGE=registry.gitlab.com/<group>/<project>
+#
+# Запуск вручную для отладки:
+#   IMAGE_TAG=abc1234 REGISTRY_IMAGE=registry.gitlab.com/petr/grindy \
+#     docker compose --env-file .env -f docker-compose.deploy.yml pull
+#   docker compose --env-file .env -f docker-compose.deploy.yml up -d
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    image: ${REGISTRY_IMAGE}/backend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8000"
+
+  bot:
+    image: ${REGISTRY_IMAGE}/backend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      RUN_SCHEDULER: "false"
+    command: python -m bot.main
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+  frontend-build:
+    image: ${REGISTRY_IMAGE}/frontend:${IMAGE_TAG:-latest}
+    volumes:
+      - frontend_dist:/srv
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - frontend_dist:/srv:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend-build
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+  frontend_dist:

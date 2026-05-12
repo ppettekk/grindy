@@ -1,0 +1,218 @@
+# Grindy — GitLab CI/CD pipeline.
+#
+# Stages:
+#   lint    — ruff на бэкенде
+#   test    — pytest + smoke-импорт
+#   build   — фронт собирается через vite, dist кладётся артефактом
+#   package — docker images собираются и пушатся в GitLab Container Registry
+#   deploy  — на main по SSH идёт pull новых образов и рестарт compose
+#
+# Требуемые CI/CD переменные (Settings → CI/CD → Variables):
+#   SSH_PRIVATE_KEY       — File / приватный SSH-ключ для деплой-пользователя на сервере
+#   SSH_HOST              — IP/домен сервера
+#   SSH_USER              — `grindy`
+#   SSH_PORT              — 22 (опционально)
+#   PROD_DOMAIN           — `grindy.ru` (для smoke-чека и URL environment)
+#   DEPLOY_TOKEN_USER     — username Deploy Token-а (Settings → Repository → Deploy Tokens, scope: read_registry)
+#   DEPLOY_TOKEN_PASSWORD — пароль того же Deploy Token-а (masked, protected)
+#
+# Переменные с пометкой Protected будут видны только в protected ветках/тегах (main).
+
+stages:
+  - lint
+  - test
+  - build
+  - package
+  - deploy
+
+variables:
+  PYTHON_IMAGE: "python:3.11-slim"
+  NODE_IMAGE: "node:20-alpine"
+  DOCKER_TLS_CERTDIR: "/certs"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.pip-cache"
+
+# Глобальный кэш — общий для пайплайнов с одинаковой веткой.
+cache:
+  key:
+    files:
+      - backend/requirements.txt
+      - frontend/package.json
+  paths:
+    - .pip-cache/
+    - frontend/node_modules/
+
+default:
+  interruptible: true
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+# ============================================================
+# LINT
+# ============================================================
+ruff:
+  stage: lint
+  image: $PYTHON_IMAGE
+  before_script:
+    - pip install --cache-dir "$PIP_CACHE_DIR" ruff
+  script:
+    - cd backend && ruff check app bot
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH
+
+# ============================================================
+# TEST
+# ============================================================
+pytest:
+  stage: test
+  image: $PYTHON_IMAGE
+  variables:
+    DATABASE_URL: "sqlite+aiosqlite:///./test.db"
+    BOT_TOKEN: ""
+    RUN_SCHEDULER: "false"
+    GEMINI_API_KEY: ""
+  before_script:
+    - cd backend
+    - pip install --cache-dir "../$PIP_CACHE_DIR" -r requirements.txt
+    - pip install --cache-dir "../$PIP_CACHE_DIR" pytest pytest-asyncio
+  script:
+    - pytest -v
+    - python -c "from app.main import app; assert len(app.routes) > 5; print('routes:', len(app.routes))"
+    - python -c "from bot.handlers import setup_handlers; from aiogram import Dispatcher; from aiogram.fsm.storage.memory import MemoryStorage; dp = Dispatcher(storage=MemoryStorage()); setup_handlers(dp); print('routers:', [r.name for r in dp.sub_routers])"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH
+
+# ============================================================
+# BUILD (frontend)
+# ============================================================
+frontend-build:
+  stage: build
+  image: $NODE_IMAGE
+  before_script:
+    - cd frontend
+    - npm install --no-audit --no-fund
+  script:
+    - npx tsc -b
+    - npx vite build
+  artifacts:
+    paths:
+      - frontend/dist
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH
+
+# ============================================================
+# PACKAGE — docker images → GitLab Container Registry
+# ============================================================
+.docker-base: &docker-base
+  stage: package
+  image: docker:24
+  services:
+    - name: docker:24-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_DRIVER: overlay2
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+backend-image:
+  <<: *docker-base
+  needs:
+    - job: ruff
+    - job: pytest
+  script:
+    - export TAG="$CI_COMMIT_SHORT_SHA"
+    - docker pull "$CI_REGISTRY_IMAGE/backend:latest" || true
+    - >
+      docker build
+      --cache-from "$CI_REGISTRY_IMAGE/backend:latest"
+      -t "$CI_REGISTRY_IMAGE/backend:$TAG"
+      -t "$CI_REGISTRY_IMAGE/backend:latest"
+      ./backend
+    - docker push "$CI_REGISTRY_IMAGE/backend:$TAG"
+    - docker push "$CI_REGISTRY_IMAGE/backend:latest"
+
+frontend-image:
+  <<: *docker-base
+  needs:
+    - job: frontend-build
+      artifacts: true
+  script:
+    - export TAG="$CI_COMMIT_SHORT_SHA"
+    - docker pull "$CI_REGISTRY_IMAGE/frontend:latest" || true
+    - >
+      docker build
+      -f ./frontend/Dockerfile.prod
+      --cache-from "$CI_REGISTRY_IMAGE/frontend:latest"
+      --build-arg VITE_API_BASE=""
+      -t "$CI_REGISTRY_IMAGE/frontend:$TAG"
+      -t "$CI_REGISTRY_IMAGE/frontend:latest"
+      ./frontend
+    - docker push "$CI_REGISTRY_IMAGE/frontend:$TAG"
+    - docker push "$CI_REGISTRY_IMAGE/frontend:latest"
+
+# ============================================================
+# DEPLOY
+# ============================================================
+deploy:
+  stage: deploy
+  image: alpine:3.20
+  needs:
+    - job: backend-image
+    - job: frontend-image
+  environment:
+    name: production
+    url: https://$PROD_DOMAIN
+  before_script:
+    - apk add --no-cache openssh-client curl bash
+    - eval $(ssh-agent -s)
+    - chmod 600 "$SSH_PRIVATE_KEY"
+    - ssh-add "$SSH_PRIVATE_KEY"
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+  script:
+    # Готовим .env.deploy локально и копируем на сервер
+    - |
+      cat > .env.deploy <<EOF
+      IMAGE_TAG=$CI_COMMIT_SHORT_SHA
+      REGISTRY_IMAGE=$CI_REGISTRY_IMAGE
+      EOF
+    - scp -P "${SSH_PORT:-22}" .env.deploy "$SSH_USER@$SSH_HOST:~/grindy/.env.deploy"
+    # Деплой одной SSH-командой; локальные $-переменные интерполируются GitLab Runner-ом.
+    - |
+      ssh -p "${SSH_PORT:-22}" "$SSH_USER@$SSH_HOST" "
+        set -euo pipefail
+        cd ~/grindy
+        git fetch origin $CI_DEFAULT_BRANCH
+        git reset --hard origin/$CI_DEFAULT_BRANCH
+        echo '$DEPLOY_TOKEN_PASSWORD' | docker login $CI_REGISTRY -u '$DEPLOY_TOKEN_USER' --password-stdin
+        docker compose --env-file .env --env-file .env.deploy -f docker-compose.deploy.yml pull
+        docker compose --env-file .env --env-file .env.deploy -f docker-compose.deploy.yml up -d --remove-orphans
+        docker image prune -f
+      "
+  after_script:
+    # Smoke-чек /health (несколько попыток, пока контейнеры подымаются)
+    - |
+      for i in 1 2 3 4 5 6; do
+        if curl -fsS --max-time 10 "https://$PROD_DOMAIN/health"; then
+          echo "✓ /health up"
+          exit 0
+        fi
+        echo "retry $i…"
+        sleep 5
+      done
+      echo "✗ /health не ответил"
+      exit 1
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

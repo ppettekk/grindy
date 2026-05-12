@@ -1,0 +1,15 @@
+# Multi-stage build: собираем статику, потом отдаём Caddy через volume.
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install --no-audit --no-fund
+COPY . .
+ARG VITE_API_BASE=""
+ENV VITE_API_BASE=${VITE_API_BASE}
+RUN npm run build
+
+# В production используется только dist/ — копируется в Caddy volume.
+FROM alpine:3.20 AS runtime
+WORKDIR /dist
+COPY --from=builder /app/dist /dist
+CMD ["sh", "-c", "cp -r /dist/. /srv/ && echo 'frontend dist copied to /srv'"]

@@ -1,0 +1,210 @@
+"""Trudvsem.ru — открытое API госпортала «Работа России».
+
+Документация: https://trudvsem.ru/opendata/api
+Endpoint: http://opendata.trudvsem.ru/api/v1/vacancies
+- Без авторизации.
+- Лимит ≤ 100 записей на запрос (offset/limit-пагинация).
+- Зарплата — `salary_min`/`salary_max`, всегда в рублях.
+- Не банит DC-IP, можно с любого хостинга.
+
+Использование: один из основных источников вакансий для проекта.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+from ..schemas import VacancyDTO
+from .base import BaseParser
+
+logger = logging.getLogger(__name__)
+
+
+# Широкие запросы, под которые попадают сотни релевантных профессий.
+# Мы НЕ хардкодим «бариста/курьер» — это слишком узко и пропускает кучу
+# подходящего (упаковщики, флаерщики, расклейщики, разнорабочие и т.д.).
+# Локально потом фильтруем по requirement.experience==0 и постфильтром
+# is_suitable_for_teen.
+TRUDVSEM_QUERIES = [
+    "подработка",
+    "без опыта",
+    "школьник",
+    "студент",
+    "стажёр",
+    "помощник",
+    "ученик",
+    "стажировка",
+]
+
+
+# Берём только вакансии «без опыта». Поле requirement.experience приходит
+# числом — 0 значит «не требуется». Иногда приходит строкой/None — считаем
+# как 0 (т.е. пропускаем), чтобы не отбрасывать вакансии без явного значения.
+def _requires_experience(item: dict) -> bool:
+    req = item.get("requirement")
+    if not isinstance(req, dict):
+        return False
+    exp = req.get("experience")
+    if exp in (None, "", 0, "0"):
+        return False
+    try:
+        return int(float(exp)) >= 1
+    except (TypeError, ValueError):
+        return False
+
+
+class TrudvsemParser(BaseParser):
+    source = "trudvsem"
+    BASE_URL = "https://opendata.trudvsem.ru/api/v1/vacancies"
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    async def _search(self, text: str, offset: int = 0, limit: int = 30) -> dict:
+        params = {"text": text, "offset": offset, "limit": min(limit, 100)}
+        r = await self.client.get(self.BASE_URL, params=params)
+        r.raise_for_status()
+        return r.json()
+
+    async def fetch(self, *, limit: int = 50) -> list[VacancyDTO]:
+        out: list[VacancyDTO] = []
+        seen: set[str] = set()
+        # Запрашиваем по 50 на тему — много вакансий потом отсекутся по experience.
+        per_query = max(30, limit)
+        skipped_exp = 0
+
+        for q in TRUDVSEM_QUERIES:
+            if len(out) >= limit:
+                break
+            try:
+                data = await self._search(q, offset=0, limit=per_query)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("trudvsem fetch failed for %r: %s", q, e)
+                continue
+
+            vacancies = (data.get("results") or {}).get("vacancies") or []
+            for wrapper in vacancies:
+                item = wrapper.get("vacancy") if isinstance(wrapper, dict) else None
+                if not isinstance(item, dict):
+                    continue
+                ext_id = str(item.get("id") or "")
+                if not ext_id or ext_id in seen:
+                    continue
+                seen.add(ext_id)
+
+                # Отсекаем «требуется опыт ≥1 год» — это явно не для школьников.
+                if _requires_experience(item):
+                    skipped_exp += 1
+                    continue
+
+                dto = self._map(item)
+                if dto is None:
+                    continue
+                out.append(dto)
+                if len(out) >= limit:
+                    break
+
+        if skipped_exp:
+            logger.info("trudvsem: skipped %d vacancies (experience required)", skipped_exp)
+        if not out:
+            logger.info("TrudvsemParser: ничего не получено.")
+        return out
+
+    def _map(self, item: dict[str, Any]) -> VacancyDTO | None:
+        title = (item.get("job-name") or "").strip()
+        if not title:
+            return None
+
+        ext_id = str(item.get("id") or "")
+        if not ext_id:
+            return None
+
+        company = ((item.get("company") or {}).get("name") or "").strip() or None
+        region = ((item.get("region") or {}).get("name") or "").strip() or None
+        # Нормализуем «г. Москва» / «Московская область, г. Дмитров» → ведущее значимое слово.
+        city = self._extract_city(region, item)
+
+        duty = (item.get("duty") or "").strip()
+        req_raw = item.get("requirement")
+        req_text = ""
+        if isinstance(req_raw, dict):
+            req_text = " ".join(
+                str(v) for v in req_raw.values() if v and isinstance(v, (str, int))
+            )
+        elif isinstance(req_raw, str):
+            req_text = req_raw
+
+        description = (duty + ("\n\n" + req_text if req_text else "")).strip() or None
+
+        salary_from = _safe_int(item.get("salary_min"))
+        salary_to = _safe_int(item.get("salary_max"))
+
+        schedule_text = (item.get("schedule") or "").lower()
+        employment = (item.get("employment") or "").lower()
+        remote = "удалён" in schedule_text or "дистанц" in schedule_text \
+            or "удалён" in employment or "дистанц" in employment
+        fmt = "online" if remote else "offline"
+
+        url = (item.get("vac_url") or "").strip()
+        if not url:
+            company_code = (item.get("company") or {}).get("companycode") or ""
+            if company_code and ext_id:
+                # Эмулируем стандартный URL trudvsem на случай отсутствия vac_url.
+                url = f"https://trudvsem.ru/vacancy/card/{company_code}/{ext_id}"
+        if not url:
+            return None
+
+        text_for_age = " ".join(filter(None, [title, duty, req_text]))
+
+        return VacancyDTO(
+            source="trudvsem",
+            external_id=ext_id,
+            title=title,
+            company=company,
+            description=description,
+            salary_from=salary_from,
+            salary_to=salary_to,
+            salary_unit="/мес",
+            city=city,
+            format=fmt,
+            category=None,
+            min_age=self.detect_min_age(text_for_age),
+            url=url,
+            posted_at=item.get("creation-date"),
+        )
+
+    @staticmethod
+    def _extract_city(region: str | None, item: dict[str, Any]) -> str | None:
+        """Достаёт «человеческое» название города.
+
+        Приоритеты:
+        1. `addresses.address[0].location` — первая часть до запятой (это часто прямой адрес).
+        2. region из API — обрезаем «г. » / «область».
+        """
+        addresses = (item.get("addresses") or {}).get("address")
+        if isinstance(addresses, list) and addresses:
+            loc = (addresses[0] or {}).get("location") if isinstance(addresses[0], dict) else None
+            if loc:
+                first = loc.split(",")[0].strip()
+                # Убираем «г. » префиксы.
+                if first.lower().startswith("г. "):
+                    first = first[3:]
+                if first:
+                    return first
+
+        if region:
+            cleaned = region.strip()
+            if cleaned.lower().startswith("г. "):
+                cleaned = cleaned[3:]
+            if cleaned:
+                return cleaned
+        return None
+
+
+def _safe_int(x: Any) -> int | None:
+    if x in (None, "", 0, "0"):
+        return None
+    try:
+        return int(float(x))
+    except (TypeError, ValueError):
+        return None

@@ -77,6 +77,26 @@ services:
       - backend
       - frontend-build
 
+  avito-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.avito
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      RUN_SCHEDULER: "false"
+    command: python -m app.avito_worker
+    # Chromium прожорлив — ограничиваем, чтобы не сожрал весь VPS.
+    mem_limit: 900m
+    # shm нужен Chromium; без увеличения падает на сложных страницах.
+    shm_size: 512m
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
   db-backup:
     image: prodrigestivill/postgres-backup-local:16-alpine
     restart: unless-stopped

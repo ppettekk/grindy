@@ -117,3 +117,69 @@ def test_experience_hard_signal_beats_teen_hint():
     )
     res = classify_audience(dto)
     assert res.audience == "adult_only"
+
+
+# ── is_referral_scheme ─────────────────────────────────────────────────────
+# Детектор узкий намеренно: ловит только железобетонные маркеры MLM/реф-схем.
+# Лучше пропустить мусор, чем зарубить легитимную вакансию ритейла.
+
+
+def test_referral_scheme_invite_friend():
+    from app.services.filter import is_referral_scheme
+    dto = _make("Курьер", "Приведи друга и получи бонус за приглашение 3000 рублей")
+    assert is_referral_scheme(dto) is True
+
+
+def test_referral_scheme_referral_link():
+    from app.services.filter import is_referral_scheme
+    dto = _make("Работа на дому", "Регистрируйся по реферальной ссылке, доход без вложений")
+    assert is_referral_scheme(dto) is True
+
+
+def test_referral_scheme_referral_program_in_company():
+    from app.services.filter import is_referral_scheme
+    dto = _make("Курьер", "Доставка еды", company="Реферальная программа Драйв")
+    assert is_referral_scheme(dto) is True
+
+
+def test_referral_scheme_mlm():
+    from app.services.filter import is_referral_scheme
+    dto = _make("Менеджер", "Сетевой маркетинг, построй свою команду")
+    assert is_referral_scheme(dto) is True
+
+
+# ── НЕ реф-схема: легитимные вакансии не должны помечаться ──────────────────
+
+
+def test_not_referral_real_samokat():
+    """Настоящая вакансия Самоката — НЕ реф-схема."""
+    from app.services.filter import is_referral_scheme
+    dto = _make("Курьер", "Доставка заказов Самоката, гибкий график, выплаты ежедневно",
+                company="Самокат")
+    assert is_referral_scheme(dto) is False
+
+
+def test_not_referral_retail_chain():
+    """Магнит / Ашан / Пятёрочка — обычный ритейл, не реф-схема."""
+    from app.services.filter import is_referral_scheme
+    for company, title, desc in [
+        ("Магнит", "Продавец-кассир", "Работа в магазине у дома, оформление по ТК РФ"),
+        ("Ашан", "Кассир, подработка", "Гипермаркет, сменный график, обучение на месте"),
+        ("Пятёрочка", "Сотрудник магазина", "Выкладка товара, работа с кассой, соцпакет"),
+    ]:
+        dto = _make(title, desc, company=company)
+        assert is_referral_scheme(dto) is False, f"{company} ошибочно помечен"
+
+
+def test_not_referral_normal_courier():
+    from app.services.filter import is_referral_scheme
+    dto = _make("Пеший курьер", "Доставка документов по центру, оплата сдельная, обучение")
+    assert is_referral_scheme(dto) is False
+
+
+def test_not_referral_partner_word_alone():
+    """Просто слово 'партнёр' или 'подключение' — НЕ повод считать реф-схемой."""
+    from app.services.filter import is_referral_scheme
+    dto = _make("Курьер-партнёр", "Подключим к сервису за 10 минут, выплаты ежедневно")
+    # Узкий детектор это пропускает — на совести LLM-модератора.
+    assert is_referral_scheme(dto) is False

@@ -72,12 +72,22 @@ export default function App() {
   }
 
   async function handleStartParam(): Promise<void> {
-    const sp = tgStartParam();
-    if (!sp) return;
-    // Формат: v_<hex32> (UUID без дефисов).
-    const m = /^v_([0-9a-fA-F]{32})$/.exec(sp);
-    if (!m) return;
-    const hex = m[1];
+    // Источник 1: ?v=<hex> в URL (когда WebApp открыт через web_app кнопку).
+    // Источник 2: tg.initDataUnsafe.start_param = v_<hex> (через t.me deep link).
+    let hex: string | undefined;
+    try {
+      const url = new URL(window.location.href);
+      const v = url.searchParams.get("v");
+      if (v && /^[0-9a-fA-F]{32}$/.test(v)) hex = v;
+    } catch {
+      // ignore
+    }
+    if (!hex) {
+      const sp = tgStartParam();
+      const m = sp ? /^v_([0-9a-fA-F]{32})$/.exec(sp) : null;
+      if (m) hex = m[1];
+    }
+    if (!hex) return;
     const uuid =
       `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}` +
       `-${hex.slice(16, 20)}-${hex.slice(20)}`;
@@ -85,7 +95,7 @@ export default function App() {
       const v = await getVacancy(uuid);
       openVacancy(v);
     } catch (e) {
-      console.warn("start_param vacancy fetch failed", e);
+      console.warn("deep-link vacancy fetch failed", e);
     }
   }
 

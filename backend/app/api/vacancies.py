@@ -106,8 +106,13 @@ async def list_vacancies(
                     Vacancy.format == VacancyFormat.online,
                 )
             )
-    if age in (14, 16, 18):
-        stmt = stmt.where(Vacancy.min_age <= age)
+    if age == 14:
+        # 14-летние видят только явные teen-вакансии (min_age<=14).
+        stmt = stmt.where(Vacancy.min_age <= 14)
+    # age 16/18 — показываем всё (включая 18+). 16-летние фактически
+    # увидят и student-вакансии с пометкой «18+» на фронте; это компромисс,
+    # потому что строгая teen-выборка слишком пуста, а 18+ часто фактически
+    # доступны старшеклассникам (стажировки, ИП родителей, и т.п.).
     if format:
         stmt = stmt.where(Vacancy.format == VacancyFormat(format))
     if salary_from is not None and salary_from > 0:

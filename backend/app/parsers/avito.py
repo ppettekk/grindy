@@ -1,26 +1,27 @@
-"""Avito — парсер поисковой страницы вакансий.
+"""Avito — парсер вакансий через Playwright (headless Chromium).
 
-У Avito нет публичного API. Идём через HTML страницы /all/vakansii с
-браузероподобными заголовками и парсим карточки через bs4.
-При срабатывании anti-bot (403/429) парсер возвращает пустой список и
-пишет warning — ingest продолжит работу с другими источниками.
+У Avito анти-бот DataDome: JS-проверка, которую не пройти простым HTTP.
+Открываем страницы настоящим headless-браузером в отдельном контейнере
+(Dockerfile.avito + app/avito_worker.py).
 
-Если на проде anti-bot будет резать постоянно, можно поднять флаг
-``AVITO_ENABLED=false`` или подменить fetch на headless-вариант через
-Playwright (см. README.md).
+ВАЖНО: для браузера нужен СТАТИЧНЫЙ (sticky) прокси — ротационный рвёт
+навигацию посреди загрузки. Поэтому отдельная переменная AVITO_PROXY.
+
+При срабатывании анти-бота парсер возвращает [] и пишет warning.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import random
 import re
 from typing import Any
+from urllib.parse import unquote, urlencode, urlparse
 
-import httpx
-from bs4 import BeautifulSoup
-
+from ..config import settings
 from ..schemas import VacancyDTO
-from .base import BaseParser, make_async_client
+from .base import BaseParser
 
 logger = logging.getLogger(__name__)
 
@@ -31,27 +32,49 @@ AVITO_QUERIES = [
     "промоутер",
     "официант",
     "бариста",
-    "репетитор",
+    "помощник",
+    "расклейщик",
+    "грузчик подработка",
 ]
 
-BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;q=0.9,"
-        "image/avif,image/webp,*/*;q=0.8"
-    ),
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
-}
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+_STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru', 'en-US']});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+window.chrome = {runtime: {}};
+"""
+
+
+def _parse_proxy_url(url: str) -> dict | None:
+    """Превращает 'http://user:pass@host:port' в формат proxy для Playwright.
+
+    username/password в URL обычно URL-кодированы (';' → '%3B') — Playwright
+    принимает их отдельными полями, поэтому возвращаем через unquote.
+    """
+    url = (url or "").strip()
+    if not url:
+        return None
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return None
+    if not p.hostname:
+        return None
+    scheme = p.scheme or "http"
+    server = f"{scheme}://{p.hostname}"
+    if p.port:
+        server += f":{p.port}"
+    out: dict[str, str] = {"server": server}
+    if p.username:
+        out["username"] = unquote(p.username)
+    if p.password:
+        out["password"] = unquote(p.password)
+    return out
 
 
 class AvitoParser(BaseParser):
@@ -59,62 +82,154 @@ class AvitoParser(BaseParser):
     BASE = "https://www.avito.ru"
     SEARCH_PATH = "/all/vakansii"
 
-    def __init__(self, client: httpx.AsyncClient | None = None, **opts):
-        client = client or make_async_client(
-            headers=BROWSER_HEADERS,
-            timeout=httpx.Timeout(25.0, connect=10.0),
-            follow_redirects=True,
-        )
+    def __init__(self, client: Any = None, **opts):
+        # httpx-клиент Avito не нужен — ходим через Playwright.
         super().__init__(client=client, **opts)
 
     async def fetch(self, *, limit: int = 50) -> list[VacancyDTO]:
+        if not settings.avito_enabled:
+            logger.info("Avito disabled (AVITO_ENABLED=false)")
+            return []
+
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            logger.error("playwright не установлен — AvitoParser пропущен")
+            return []
+
         out: list[VacancyDTO] = []
         seen: set[str] = set()
         per_query = max(5, limit // len(AVITO_QUERIES))
+        # Для браузера нужен СТАТИЧНЫЙ IP — ротационный рвёт навигацию.
+        proxy = _parse_proxy_url(settings.avito_effective_proxy)
 
-        for q in AVITO_QUERIES:
-            if len(out) >= limit:
-                break
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                proxy=proxy,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-gpu",
+                ],
+            )
             try:
-                cards = await self._search(q, per_query)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("avito search %r failed: %s", q, e)
-                continue
-            for c in cards:
-                ext_id = c.get("external_id")
-                if not ext_id or ext_id in seen:
-                    continue
-                seen.add(ext_id)
-                out.append(self._map(c))
-                if len(out) >= limit:
-                    break
+                context = await browser.new_context(
+                    user_agent=BROWSER_UA,
+                    viewport={"width": 1366, "height": 768},
+                    locale="ru-RU",
+                    timezone_id="Europe/Moscow",
+                )
+                await context.add_init_script(_STEALTH_JS)
+
+                # «Прогрев»: заходим на главную, получаем DataDome-куки,
+                # имитируем что пришёл живой пользователь — потом поиск
+                # проходит мягче.
+                warm = await context.new_page()
+                try:
+                    await warm.goto(
+                        "https://www.avito.ru/", wait_until="domcontentloaded",
+                        timeout=35000,
+                    )
+                    await warm.wait_for_timeout(3000)
+                    await warm.mouse.wheel(0, 1200)
+                    await warm.wait_for_timeout(1500)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("avito warmup failed: %s", e)
+                finally:
+                    await warm.close()
+
+                for q in AVITO_QUERIES:
+                    if len(out) >= limit:
+                        break
+                    # Свежая страница на каждый запрос: упавшая навигация
+                    # не отравляет последующие.
+                    page = await context.new_page()
+                    try:
+                        cards = await self._search(page, q, per_query)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("avito search %r failed: %s", q, e)
+                        cards = []
+                    finally:
+                        await page.close()
+
+                    for c in cards:
+                        ext_id = c.get("external_id")
+                        if not ext_id or ext_id in seen:
+                            continue
+                        seen.add(ext_id)
+                        out.append(self._map(c))
+                        if len(out) >= limit:
+                            break
+                    # Длинная случайная пауза — DataDome триггерится на
+                    # быструю серию запросов. 8-16 сек между поисками.
+                    await asyncio.sleep(random.uniform(8.0, 16.0))
+            finally:
+                await browser.close()
 
         if not out:
             logger.info(
-                "AvitoParser: ничего не получено — вероятно, anti-bot. "
-                "Парсер вернул пустой список."
+                "AvitoParser: ничего не получено — вероятно anti-bot DataDome."
             )
         return out
 
-    async def _search(self, query: str, limit: int) -> list[dict[str, Any]]:
-        params = {"q": query, "s": "104"}  # s=104 — сортировка по дате
-        r = await self.client.get(self.BASE + self.SEARCH_PATH, params=params)
-        if r.status_code in (403, 429):
-            logger.warning("avito anti-bot %s for %r", r.status_code, query)
-            return []
-        if r.status_code != 200:
-            logger.warning("avito unexpected %s for %r", r.status_code, query)
-            return []
-        return self._extract_from_html(r.text, limit)
+    async def _search(self, page: Any, query: str, limit: int) -> list[dict[str, Any]]:
+        params = urlencode({"q": query, "s": "104"})  # s=104 — сортировка по дате
+        url = f"{self.BASE}{self.SEARCH_PATH}?{params}"
 
-    # Парсинг HTML
+        # Навигация с ретраями: одна неудачная попытка не должна ронять запрос.
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=35000)
+                last_err = None
+                break
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                logger.debug("avito goto attempt %d failed: %s", attempt + 1, e)
+                await asyncio.sleep(2.0 * (attempt + 1))
+        if last_err is not None:
+            raise last_err
+
+        # Имитируем живого пользователя: лёгкий скролл, человекоподобные
+        # паузы. DataDome-challenge часто JS-based и решается сам, если
+        # дать странице «пожить» и проскроллить.
+        async def _looks_loaded() -> bool:
+            try:
+                await page.wait_for_selector(
+                    '[data-marker="item"]', timeout=12000
+                )
+                return True
+            except Exception:  # noqa: BLE001
+                return False
+
+        if not await _looks_loaded():
+            # Возможно DataDome-challenge — даём ему время, скроллим, ждём.
+            for _ in range(3):
+                await page.mouse.wheel(0, random.randint(600, 1400))
+                await page.wait_for_timeout(random.randint(2500, 4500))
+                if await _looks_loaded():
+                    break
+            else:
+                logger.warning(
+                    "avito: no item cards for %r (anti-bot challenge?)", query
+                )
+                return []
+
+        await page.wait_for_timeout(random.randint(1000, 2200))
+        html = await page.content()
+        return self._extract_from_html(html, limit)
+
+    # ── Парсинг HTML (bs4 / JSON-LD) ──────────────────────────────────
 
     @classmethod
     def _extract_from_html(cls, html: str, limit: int) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
+        from bs4 import BeautifulSoup
 
-        # 1) JSON-LD — самый стабильный путь, если он есть
+        out: list[dict[str, Any]] = []
         soup = BeautifulSoup(html, "lxml")
+
         for tag in soup.find_all("script", type="application/ld+json"):
             try:
                 data = json.loads(tag.string or "{}")
@@ -127,12 +242,10 @@ class AvitoParser(BaseParser):
                     if len(out) >= limit:
                         return out
 
-        # 2) DOM-fallback: карточки с data-marker="item"
         cards = soup.select('div[data-marker="item"]')
         for c in cards:
             parsed = cls._parse_card(c)
             if parsed:
-                # avoid duplicates already added через JSON-LD
                 if any(p.get("external_id") == parsed["external_id"] for p in out):
                     continue
                 out.append(parsed)
@@ -142,7 +255,6 @@ class AvitoParser(BaseParser):
 
     @staticmethod
     def _iter_jobpostings(node: Any):
-        """Рекурсивно достаёт JobPosting-ноды из JSON-LD."""
         if isinstance(node, dict):
             t = node.get("@type")
             if t == "JobPosting":
@@ -163,7 +275,6 @@ class AvitoParser(BaseParser):
         url = item.get("url") or ""
         if not url:
             return None
-        # external_id из URL: https://www.avito.ru/.../vakansiya_..._1234567890
         m = re.search(r"_(\d{6,})(?:[/?#]|$)", url)
         if not m:
             return None
@@ -200,7 +311,7 @@ class AvitoParser(BaseParser):
         ext_id = card.get("data-item-id") or card.get("id")
         if not ext_id:
             return None
-        ext_id = re.sub(r"^i", "", str(ext_id))  # иногда "i123456"
+        ext_id = re.sub(r"^i", "", str(ext_id))
 
         a = card.select_one('a[data-marker="item-title"]')
         if not a:
@@ -242,11 +353,8 @@ class AvitoParser(BaseParser):
             "posted_at": None,
         }
 
-    # Зарплата
-
     @staticmethod
-    def _parse_salary_struct(obj: dict[str, Any]) -> tuple[int | None, int | None, str | None]:
-        """Парсинг baseSalary из JSON-LD."""
+    def _parse_salary_struct(obj: dict[str, Any]):
         if not obj or not isinstance(obj, dict):
             return None, None, None
         value = obj.get("value")
@@ -263,16 +371,13 @@ class AvitoParser(BaseParser):
         except (TypeError, ValueError):
             sf, st = None, None
         unit_map = {
-            "HOUR": "/час",
-            "DAY": "/день",
-            "WEEK": "/неделя",
-            "MONTH": "/мес",
-            "YEAR": "/год",
+            "HOUR": "/час", "DAY": "/день", "WEEK": "/неделя",
+            "MONTH": "/мес", "YEAR": "/год",
         }
         return sf, st, unit_map.get(str(unit_text).upper(), "/мес")
 
     @staticmethod
-    def _parse_salary_text(raw: str) -> tuple[int | None, int | None, str | None]:
+    def _parse_salary_text(raw: str):
         if not raw:
             return None, None, None
         text = raw.replace("\xa0", " ").lower()
@@ -282,7 +387,6 @@ class AvitoParser(BaseParser):
             nums = [int(x) for x in single] if single else []
         if not nums:
             return None, None, None
-
         unit = "/мес"
         if "смен" in text:
             unit = "/смену"
@@ -290,7 +394,6 @@ class AvitoParser(BaseParser):
             unit = "/час"
         elif "день" in text or "за день" in text:
             unit = "/день"
-
         if "от" in text and "до" in text and len(nums) >= 2:
             return nums[0], nums[1], unit
         if "от" in text:
@@ -300,8 +403,6 @@ class AvitoParser(BaseParser):
         if len(nums) >= 2:
             return nums[0], nums[1], unit
         return nums[0], None, unit
-
-    # DTO mapping
 
     def _map(self, c: dict[str, Any]) -> VacancyDTO:
         text_for_age = (c.get("title") or "") + " " + (c.get("description") or "")
@@ -327,8 +428,9 @@ class AvitoParser(BaseParser):
 def _clean_text(html: str) -> str:
     if not html:
         return ""
-    # Если разметки нет — bs4 не нужен (и сам бы предупреждал, что строка похожа на URL/файл).
     if "<" not in html:
         return re.sub(r"\s+", " ", html).strip()
+    from bs4 import BeautifulSoup
+
     soup = BeautifulSoup(html, "lxml")
     return re.sub(r"\s+", " ", soup.get_text(" ", strip=True)).strip()

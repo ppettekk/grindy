@@ -39,6 +39,23 @@ TRUDVSEM_QUERIES = [
 ]
 
 
+# Региональные запросы: endpoint /region/{ОКАТО-код} отдаёт вакансии
+# конкретного субъекта. Без этого Москва/Питер тонут в общероссийской
+# выдаче. Коды ОКАТО городов федерального значения и крупнейших агломераций.
+TRUDVSEM_REGIONS: dict[str, str] = {
+    "Москва": "45000000000",
+    "Санкт-Петербург": "40000000000",
+    "Московская область": "46000000000",
+    "Ленинградская область": "41000000000",
+    "Новосибирская область": "50000000000",
+    "Свердловская область": "65000000000",
+    "Республика Татарстан": "92000000000",
+    "Краснодарский край": "03000000000",
+    "Нижегородская область": "22000000000",
+    "Ростовская область": "60000000000",
+}
+
+
 # Берём только вакансии «без опыта». Поле requirement.experience приходит
 # числом — 0 значит «не требуется». Иногда приходит строкой/None — считаем
 # как 0 (т.е. пропускаем), чтобы не отбрасывать вакансии без явного значения.
@@ -61,51 +78,127 @@ class TrudvsemParser(BaseParser):
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def _search(self, text: str, offset: int = 0, limit: int = 30) -> dict:
+        """Общероссийский поиск по тексту."""
         params = {"text": text, "offset": offset, "limit": min(limit, 100)}
         r = await self.client.get(self.BASE_URL, params=params)
         r.raise_for_status()
         return r.json()
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    async def _search_region(
+        self, region_code: str, text: str, offset: int = 0, limit: int = 50
+    ) -> dict:
+        """Поиск по конкретному региону (ОКАТО-код)."""
+        params = {"text": text, "offset": offset, "limit": min(limit, 100)}
+        r = await self.client.get(
+            f"{self.BASE_URL}/region/{region_code}", params=params
+        )
+        r.raise_for_status()
+        return r.json()
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    async def _search_modified(
+        self, since_iso: str, offset: int = 0, limit: int = 100
+    ) -> dict:
+        """Дельта-запрос: вакансии, изменённые после ``since_iso`` (ISO-8601).
+
+        Это даёт настоящий поток свежих вакансий: на каждом ingest-цикле
+        новые публикации, а не один и тот же топ-50.
+        """
+        params = {
+            "modifiedFrom": since_iso,
+            "offset": offset,
+            "limit": min(limit, 100),
+        }
+        r = await self.client.get(f"{self.BASE_URL}/modified", params=params)
+        r.raise_for_status()
+        return r.json()
+
+    def _ingest_response(
+        self,
+        data: dict,
+        *,
+        out: list[VacancyDTO],
+        seen: set[str],
+        limit: int,
+    ) -> int:
+        """Парсит ответ API в out (in-place). Возвращает число skipped по опыту."""
+        skipped = 0
+        vacancies = (data.get("results") or {}).get("vacancies") or []
+        for wrapper in vacancies:
+            item = wrapper.get("vacancy") if isinstance(wrapper, dict) else None
+            if not isinstance(item, dict):
+                continue
+            ext_id = str(item.get("id") or "")
+            if not ext_id or ext_id in seen:
+                continue
+            seen.add(ext_id)
+            if _requires_experience(item):
+                skipped += 1
+                continue
+            dto = self._map(item)
+            if dto is None:
+                continue
+            out.append(dto)
+            if len(out) >= limit:
+                break
+        return skipped
+
     async def fetch(self, *, limit: int = 50) -> list[VacancyDTO]:
         out: list[VacancyDTO] = []
         seen: set[str] = set()
-        # Запрашиваем по 50 на тему — много вакансий потом отсекутся по experience.
-        per_query = max(30, limit)
         skipped_exp = 0
 
+        # /modified endpoint у Trudvsem не существует (404) — проверено вживую.
+        # Источник свежака — только региональные запросы (см. ниже) + offset.
+        # Чтобы получать больше уникальных вакансий, пагинируем по регионам.
+
+        # 1) Региональные запросы — приоритет крупным городам, чтобы лента
+        #    не была общероссийской кашей. Пагинируем по 2-3 страницы на регион
+        #    через offset — это даёт больше уникальных вакансий каждый ingest.
+        for region_name, code in TRUDVSEM_REGIONS.items():
+            if len(out) >= limit * 6:
+                break
+            for offset in (0, 100, 200):
+                try:
+                    data = await self._search_region(
+                        code, "подработка", offset=offset, limit=100
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "trudvsem region %s (%s) offset=%d failed: %s",
+                        region_name, code, offset, e,
+                    )
+                    break
+                before = len(out)
+                skipped_exp += self._ingest_response(
+                    data, out=out, seen=seen, limit=limit * 6
+                )
+                # Если страница ничего не добавила — следующая бесполезна,
+                # значит регион пуст / выдача закончилась.
+                if len(out) == before:
+                    break
+                if len(out) >= limit * 6:
+                    break
+
+        # 2) Общероссийские текстовые запросы — добивают мелкие города.
+        per_query = max(30, limit)
         for q in TRUDVSEM_QUERIES:
-            if len(out) >= limit:
+            if len(out) >= limit * 5:
                 break
             try:
                 data = await self._search(q, offset=0, limit=per_query)
             except Exception as e:  # noqa: BLE001
                 logger.warning("trudvsem fetch failed for %r: %s", q, e)
                 continue
-
-            vacancies = (data.get("results") or {}).get("vacancies") or []
-            for wrapper in vacancies:
-                item = wrapper.get("vacancy") if isinstance(wrapper, dict) else None
-                if not isinstance(item, dict):
-                    continue
-                ext_id = str(item.get("id") or "")
-                if not ext_id or ext_id in seen:
-                    continue
-                seen.add(ext_id)
-
-                # Отсекаем «требуется опыт ≥1 год» — это явно не для школьников.
-                if _requires_experience(item):
-                    skipped_exp += 1
-                    continue
-
-                dto = self._map(item)
-                if dto is None:
-                    continue
-                out.append(dto)
-                if len(out) >= limit:
-                    break
+            skipped_exp += self._ingest_response(
+                data, out=out, seen=seen, limit=limit * 5
+            )
 
         if skipped_exp:
-            logger.info("trudvsem: skipped %d vacancies (experience required)", skipped_exp)
+            logger.info(
+                "trudvsem: skipped %d vacancies (experience required)", skipped_exp
+            )
         if not out:
             logger.info("TrudvsemParser: ничего не получено.")
         return out

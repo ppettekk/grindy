@@ -133,6 +133,21 @@ class Settings(BaseSettings):
     )
     parser_proxy: str = Field(default="", validation_alias="PARSER_PROXY")
 
+    # Avito (отдельный воркер на Playwright — см. app/avito_worker.py)
+    avito_enabled: bool = Field(default=True, validation_alias="AVITO_ENABLED")
+    # Как часто avito-worker парсит Avito (минуты). Avito тяжёлый — реже.
+    avito_interval_min: int = Field(
+        default=120, validation_alias="AVITO_INTERVAL_MIN"
+    )
+    # Отдельный прокси для Avito: ОБЯЗАТЕЛЬНО статичный/sticky IP.
+    # Ротационный (PARSER_PROXY) рвёт браузерные сессии посреди навигации.
+    # Если пусто — fallback на PARSER_PROXY (но Avito с ротацией не работает).
+    avito_proxy: str = Field(default="", validation_alias="AVITO_PROXY")
+
+    @property
+    def avito_effective_proxy(self) -> str:
+        return (self.avito_proxy or self.parser_proxy or "").strip()
+
     # Payments
     yookassa_shop_id: str = Field(default="", validation_alias="YOOKASSA_SHOP_ID")
     yookassa_secret_key: str = Field(

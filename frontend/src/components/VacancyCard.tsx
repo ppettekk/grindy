@@ -13,7 +13,11 @@ interface Props {
 
 export function VacancyCard({ v, onOpen }: Props) {
   const viewed = useStore((s) => s.viewed.has(v.id));
+  const userAge = useStore((s) => s.user?.age_filter);
   const pinned = v.is_featured;
+  // Если вакансия помечена как 18+, а у юзера в профиле возраст меньше —
+  // подсвечиваем чип жёлтым: «обычно 18+, проверь требования».
+  const ageWarning = v.min_age >= 18 && typeof userAge === "number" && userAge < 18;
   return (
     <div
       onClick={onOpen}
@@ -111,7 +115,24 @@ export function VacancyCard({ v, onOpen }: Props) {
           </Chip>
         )}
         <Chip>{fmtLabel(v.format)}</Chip>
-        <Chip mono>{v.min_age}+</Chip>
+        {ageWarning ? (
+          <span
+            className="inline-flex items-center gap-1 px-2 py-0.5 font-mono"
+            style={{
+              background: "rgba(255, 181, 71, 0.12)",
+              color: "#FFB547",
+              border: "1px solid rgba(255,181,71,0.35)",
+              borderRadius: 999,
+              fontSize: 11,
+              fontWeight: 700,
+            }}
+            title="Обычно требуется 18+, проверь условия в описании"
+          >
+            18+ только
+          </span>
+        ) : (
+          <Chip mono>{v.min_age}+</Chip>
+        )}
       </div>
     </div>
   );

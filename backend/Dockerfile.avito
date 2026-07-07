@@ -1,0 +1,22 @@
+# Avito-воркер: Playwright + headless Chromium.
+# Base-образ Microsoft Playwright уже содержит Chromium и системные
+# зависимости. Нужен -noble (Ubuntu 24.04 → Python 3.12): код проекта
+# использует enum.StrEnum, который появился только в Python 3.11.
+# Вариант -jammy идёт с Python 3.10 и падает на импорте моделей.
+FROM mcr.microsoft.com/playwright/python:v1.49.0-noble
+
+WORKDIR /code
+
+# Python-зависимости проекта (fastapi/sqlalchemy/httpx/bs4/...).
+# В noble-образе playwright лежит в отдельном venv, поэтому ставим
+# playwright-пакет явно в тот же системный python, что и наш код.
+# Версия фиксирована под Chromium, вшитый в base-образ (v1.49.0).
+# Сами браузеры скачивать не надо — они уже в /ms-playwright.
+COPY requirements.txt .
+RUN pip install --no-cache-dir --break-system-packages -r requirements.txt \
+    && pip install --no-cache-dir --break-system-packages playwright==1.49.0
+
+COPY . .
+
+# Воркер сам по расписанию парсит Avito и пишет в общую БД.
+CMD ["python", "-m", "app.avito_worker"]

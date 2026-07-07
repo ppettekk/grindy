@@ -1,10 +1,15 @@
-"""Rabota.ru - парсер search-страниц с JSON-LD.
+"""Rabota.ru - двухступенчатый парсер.
 
-JSON-LD в search-выдаче уже содержит baseSalary с minValue/maxValue/unitText.
-Никакие детальные страницы не нужны (они всё равно 403 с DC-IP).
+1. Search-страница → ID/title/url + baseSalary (если JSON-LD есть).
+2. Для каждой вакансии без city → дёргаем detail-страницу: оттуда вытаскиваем
+   addressLocality из JSON-LD. Это даёт нам город, которого нет в search.
+
+Detail-страницы доступны только с «чистого» РФ-IP (через PARSER_PROXY).
+Если detail вернул 403/timeout — продолжаем работу без обогащения.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -17,6 +22,11 @@ from ..schemas import VacancyDTO
 from .base import BaseParser, make_async_client
 
 logger = logging.getLogger(__name__)
+
+
+# Сколько detail-страниц тянем параллельно. Слишком много → анти-бот.
+DETAIL_CONCURRENCY = 3
+DETAIL_TIMEOUT_SEC = 8.0
 
 
 # Широкие запросы для максимального покрытия. Релевантность подростковости
@@ -75,7 +85,7 @@ class RabotaParser(BaseParser):
         seen: set[str] = set()
         per_query = max(5, limit // len(RABOTA_QUERIES))
 
-        # 1) Собираем список из search-страниц
+        # 1) Собираем список из search-страниц.
         for q in RABOTA_QUERIES:
             if len(out) >= limit:
                 break
@@ -93,9 +103,71 @@ class RabotaParser(BaseParser):
                 if len(out) >= limit:
                     break
 
+        # 2) Обогащаем detail-страницами те, у которых нет city/зарплаты.
+        #    Поскольку search Rabota не отдаёт addressLocality, без этого шага
+        #    у нас не будет городов и фильтр «Москва» ничего не выдаст.
+        missing = [
+            it for it in out
+            if not it.get("city")
+            or (not it.get("salary_from") and not it.get("salary_to"))
+        ]
+        if missing:
+            logger.info(
+                "rabota.ru: enriching %d items via detail pages", len(missing)
+            )
+            await self._enrich_with_details(missing)
+
         if not out:
             logger.info("RabotaParser: ничего не получено.")
         return [self._map(it) for it in out]
+
+    async def _enrich_with_details(self, items: list[dict[str, Any]]) -> None:
+        """Параллельно тянет detail-страницы и пишет city/salary в items in-place.
+
+        Любая ошибка (403/timeout/parsing) тихо игнорируется — мы не валим
+        ingest из-за одной вакансии. Если detail-страницы вообще закрыты —
+        исходные данные из search остаются без изменений.
+        """
+        sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+
+        async def one(it: dict[str, Any]) -> None:
+            async with sem:
+                url = it.get("url")
+                if not url:
+                    return
+                try:
+                    r = await asyncio.wait_for(
+                        self.client.get(url), timeout=DETAIL_TIMEOUT_SEC
+                    )
+                except (TimeoutError, asyncio.TimeoutError):
+                    return
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("rabota detail %s error: %s", url, e)
+                    return
+                if r.status_code != 200:
+                    return
+                enriched = self._parse_detail(r.text)
+                if enriched:
+                    for k, v in enriched.items():
+                        if v is not None and not it.get(k):
+                            it[k] = v
+
+        await asyncio.gather(*(one(i) for i in items))
+
+    @classmethod
+    def _parse_detail(cls, html: str) -> dict[str, Any] | None:
+        """Парсит JSON-LD JobPosting со страницы конкретной вакансии."""
+        soup = BeautifulSoup(html, "lxml")
+        for tag in soup.find_all("script", type="application/ld+json"):
+            try:
+                data = json.loads(tag.string or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            for item in cls._iter_jobpostings(data):
+                parsed = cls._from_jobposting(item)
+                if parsed:
+                    return parsed
+        return None
 
     async def _search(self, query: str, limit: int) -> list[dict[str, Any]]:
         params = {"query": query, **RABOTA_FILTER_PARAMS}

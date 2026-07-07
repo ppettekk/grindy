@@ -63,13 +63,19 @@ class HhParser(BaseParser):
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=15))
     async def _search(self, text: str, page: int = 0, per_page: int = 30) -> dict:
-        params = {
-            "text": text,
-            "page": page,
-            "per_page": per_page,
-            "order_by": "publication_time",
-            "employment": "part",
-        }
+        # label=accept_kids — официальный фильтр HH «работодатель принимает
+        # соискателей от 14 лет». Это **самый точный** источник вакансий
+        # для подростков; если у HH-IP жив прокси — даёт золото.
+        # Дополнительный label=accept_temporary — временная/разовая занятость.
+        params: list[tuple[str, str]] = [
+            ("text", text),
+            ("page", str(page)),
+            ("per_page", str(per_page)),
+            ("order_by", "publication_time"),
+            ("employment", "part"),
+            ("label", "accept_kids"),
+            ("label", "accept_temporary"),
+        ]
         r = await self.client.get(self.BASE_URL, params=params, headers=_build_headers())
         r.raise_for_status()
         return r.json()

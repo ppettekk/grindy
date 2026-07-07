@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Vacancy, VacancyFormat, VacancySource
 from ..parsers import ALL_PARSERS
+from ..parsers.base import BaseParser
 from ..schemas import VacancyDTO
 from .categorize import detect_category
 from .filter import classify_audience
@@ -17,8 +18,16 @@ from .moderation import moderator
 logger = logging.getLogger(__name__)
 
 
-async def run_ingest(session: AsyncSession, *, per_source_limit: int = 50) -> dict:
-    """Запускает все парсеры и сохраняет новые вакансии с AI-модерацией.
+async def run_ingest(
+    session: AsyncSession,
+    *,
+    per_source_limit: int = 50,
+    parsers: list[type[BaseParser]] | None = None,
+) -> dict:
+    """Запускает парсеры и сохраняет новые вакансии с AI-модерацией.
+
+    ``parsers`` — список классов парсеров. Если None — берётся ALL_PARSERS.
+    avito-worker передаёт сюда [AvitoParser], основной scheduler — None.
 
     Классификатор аудитории (services.filter.classify_audience) выставляет
     одно из трёх значений: teen / student / adult_only.
@@ -29,8 +38,9 @@ async def run_ingest(session: AsyncSession, *, per_source_limit: int = 50) -> di
     """
     stats: dict[str, dict[str, int]] = {}
     llm = LLMClassifier()
+    parser_classes = parsers if parsers is not None else ALL_PARSERS
 
-    for parser_cls in ALL_PARSERS:
+    for parser_cls in parser_classes:
         parser = parser_cls()
         s = parser.source
         stats[s] = {
@@ -96,11 +106,14 @@ async def run_ingest(session: AsyncSession, *, per_source_limit: int = 50) -> di
 
             stats[s][audience] += 1
 
+            # Локальный regex-детектор реф-схем (is_referral_scheme) выключен:
+            # у крупных ритейлеров (Магнит/Ашан/Самокат) есть HR-программы
+            # «приведи друга на работу» — regex путал их с MLM.
+            # Реф-схемы отлавливает LLM-модератор (промпт упоминает их явно)
+            # + ручная модерация через жалобы юзеров (report_autohide_threshold).
             mod = await moderator.check(dto.title, dto.company, dto.description)
-            # is_spam=True только если модератор ЯВНО пометил как спам.
-            # Высокая confidence на «не спам» (is_spam=False, conf=1.0)
-            # не должна превращаться в spam-флаг — это была старая бага.
             is_spam_flag = bool(mod.is_spam) and mod.confidence >= 0.85
+            spam_reason = mod.reason or None
             if is_spam_flag:
                 stats[s]["spam"] += 1
 
@@ -120,7 +133,7 @@ async def run_ingest(session: AsyncSession, *, per_source_limit: int = 50) -> di
                 url=dto.url,
                 is_spam=is_spam_flag,
                 spam_confidence=mod.confidence,
-                spam_reason=mod.reason or None,
+                spam_reason=spam_reason,
                 is_hidden=is_hidden,
                 hidden_reason=hidden_reason,
                 llm_classified=llm_classified,

@@ -168,13 +168,21 @@ export const useStore = create<State>((set, get) => ({
     }
     try {
       const r = await api.listVacancies({ ...get().filters, limit: 20 });
-      set({
+      set((state) => ({
         vacancies: r.items,
         cursor: r.next_cursor,
         total: r.total,
         loading: false,
-        route: r.items.length === 0 ? "empty" : "feed",
-      });
+        // Не перебиваем route, если пользователь уже на detail —
+        // например, открыл вакансию по deep-link из пуш-уведомления.
+        // Иначе llm loadInitial «съедал» открытую вакансию и кидал на ленту.
+        route:
+          state.route === "detail"
+            ? "detail"
+            : r.items.length === 0
+              ? "empty"
+              : "feed",
+      }));
     } catch (e) {
       console.error(e);
       set({ loading: false });

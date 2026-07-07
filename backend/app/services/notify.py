@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import settings
 from ..db import SessionLocal
 from ..models import User
-from .digest import format_card, pick_for_user
+from .digest import build_vacancies_keyboard, format_card, pick_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,10 @@ async def send_realtime(*, bot=None, max_per_user: int = 3) -> int:
 
                 try:
                     await bot.send_message(
-                        user.telegram_id, text, disable_web_page_preview=True
+                        user.telegram_id,
+                        text,
+                        disable_web_page_preview=True,
+                        reply_markup=build_vacancies_keyboard(vacancies),
                     )
                     sent_users += 1
                     user.last_notified_at = now

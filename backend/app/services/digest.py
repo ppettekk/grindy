@@ -20,6 +20,31 @@ logger = logging.getLogger(__name__)
 DigestKind = Literal["morning", "evening"]
 
 
+def _user_filters_stmt(user: User):
+    """Базовый SELECT с фильтрами юзера (без временного окна)."""
+    stmt = select(Vacancy).where(
+        Vacancy.is_spam.is_(False), Vacancy.is_hidden.is_(False)
+    )
+    if user.city:
+        city_aliases = aliases_for(user.city) or [user.city]
+        stmt = stmt.where(
+            or_(
+                *(Vacancy.city.ilike(f"%{a}%") for a in city_aliases),
+                Vacancy.format == VacancyFormat.online,
+            )
+        )
+    if user.age_filter == 14:
+        stmt = stmt.where(Vacancy.min_age <= 14)
+    # 16/18 — показываем всё, фронт пометит 18+ значком.
+    if user.format_filter and user.format_filter != "all":
+        stmt = stmt.where(Vacancy.format == VacancyFormat(user.format_filter))
+    if user.categories:
+        stmt = stmt.where(
+            or_(Vacancy.category.in_(user.categories), Vacancy.category.is_(None))
+        )
+    return stmt
+
+
 async def pick_for_user(
     session: AsyncSession,
     user: User,
@@ -27,38 +52,53 @@ async def pick_for_user(
     limit: int = 5,
     since: datetime | None = None,
 ) -> list[Vacancy]:
-    stmt = select(Vacancy).where(Vacancy.is_spam.is_(False), Vacancy.is_hidden.is_(False))
+    """Подбирает top-N вакансий с fallback-расширением окна.
 
+    Если за переданный ``since`` подходящего нет — расширяем 7 дней,
+    потом «без ограничения по времени». Это нужно для дайджестов:
+    если за ночь не было новых под фильтры юзера, всё равно показать
+    топ-свежее, а не пустоту.
+    """
+    base = _user_filters_stmt(user)
+    order = base.order_by(
+        Vacancy.is_featured.desc(), Vacancy.created_at.desc()
+    )
+
+    # 1) Точное окно (если задано)
     if since:
-        stmt = stmt.where(Vacancy.created_at >= since)
-    if user.city:
-        city_aliases = aliases_for(user.city) or [user.city]
-        # Город пользователя ИЛИ онлайн-вакансия. Вакансии без города
-        # не пускаем — иначе подборка превращается в кашу из разных регионов.
-        stmt = stmt.where(
-            or_(
-                *(Vacancy.city.ilike(f"%{a}%") for a in city_aliases),
-                Vacancy.format == VacancyFormat.online,
-            )
-        )
-    if user.age_filter in (14, 16, 18):
-        stmt = stmt.where(Vacancy.min_age <= user.age_filter)
-    if user.format_filter and user.format_filter != "all":
-        stmt = stmt.where(Vacancy.format == VacancyFormat(user.format_filter))
-    if user.categories:
-        stmt = stmt.where(or_(Vacancy.category.in_(user.categories), Vacancy.category.is_(None)))
+        stmt = order.where(Vacancy.created_at >= since).limit(limit)
+        rows = list((await session.execute(stmt)).scalars().all())
+        if rows:
+            return rows
 
-    stmt = stmt.order_by(Vacancy.is_featured.desc(), Vacancy.created_at.desc()).limit(limit)
-    rows = (await session.execute(stmt)).scalars().all()
-    return list(rows)
+    # 2) Fallback: последние 7 дней
+    week_ago = datetime.now(UTC) - timedelta(days=7)
+    stmt = order.where(Vacancy.created_at >= week_ago).limit(limit)
+    rows = list((await session.execute(stmt)).scalars().all())
+    if rows:
+        logger.info(
+            "pick_for_user tg=%s: fallback to 7d (no fresh in window)",
+            user.telegram_id,
+        )
+        return rows
+
+    # 3) Последний fallback — без ограничения по времени
+    rows = list(
+        (await session.execute(order.limit(limit))).scalars().all()
+    )
+    if rows:
+        logger.info(
+            "pick_for_user tg=%s: fallback to all-time", user.telegram_id
+        )
+    return rows
 
 
 def format_card(v: Vacancy) -> str:
     """HTML-форматирование карточки вакансии для Telegram.
 
-    Ссылка «Открыть в Grindy» — deep link через startapp, переоткроет
-    WebApp и в нём сразу откроется DetailScreen этой вакансии.
-    Вторая ссылка «Источник →» ведёт на оригинальный сайт работодателя.
+    Кнопка «Открыть в Grindy» больше не в тексте — её добавляет вызывающий
+    код через inline keyboard (см. build_vacancies_keyboard). Здесь только
+    текст с ссылкой на источник.
     """
     salary = "не указана"
     if v.salary_from or v.salary_to:
@@ -75,19 +115,41 @@ def format_card(v: Vacancy) -> str:
     city = v.city or ""
     fmt = v.format.value if hasattr(v.format, "value") else v.format
 
-    deep_link = (
-        f"https://t.me/{settings.bot_username}/{settings.webapp_short_name}"
-        f"?startapp=v_{v.id.hex}"
-    )
-
     return (
         f"<b>{_esc(v.title)}</b>\n"
         f"<i>{_esc(company)}</i>\n"
         f"💰 {_esc(salary)}\n"
         f"📍 {_esc(city)} · {_esc(fmt)} · {v.min_age}+\n"
-        f'<a href="{deep_link}">Открыть в Grindy →</a>'
-        f' · <a href="{v.url}">источник</a>'
+        f'<a href="{v.url}">источник →</a>'
     )
+
+
+def vacancy_webapp_url(v: Vacancy) -> str:
+    """URL для open-in-webapp inline-кнопки. Фронт читает ?v=<hex> и
+    сразу открывает DetailScreen этой вакансии."""
+    base = (settings.webapp_url or "").rstrip("/")
+    return f"{base}/?v={v.id.hex}"
+
+
+def build_vacancies_keyboard(vacancies: list[Vacancy]) -> dict:
+    """Inline-клавиатура с кнопками «1», «2», «3»… по числу вакансий.
+
+    Каждая кнопка — WebApp deep link (через URL query). Это работает
+    надёжнее, чем `t.me/<bot>/<short_name>?startapp=...`, потому что не
+    зависит от того, заведено ли у бота Mini App с тем же short_name.
+    Возвращаем словарь, который aiogram сам конвертирует в reply_markup.
+    """
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": f"{i + 1} · открыть",
+                    "web_app": {"url": vacancy_webapp_url(v)},
+                }
+                for i, v in enumerate(vacancies)
+            ]
+        ]
+    }
 
 
 def _esc(s: str | None) -> str:
@@ -147,7 +209,12 @@ async def send_digest(kind: DigestKind, *, bot=None) -> int:
                 text = f"{header}\n\n{cards}"
 
                 try:
-                    await bot.send_message(user.telegram_id, text, disable_web_page_preview=True)
+                    await bot.send_message(
+                        user.telegram_id,
+                        text,
+                        disable_web_page_preview=True,
+                        reply_markup=build_vacancies_keyboard(vacancies),
+                    )
                     sent += 1
                 except Exception as e:  # noqa: BLE001
                     logger.warning("send_digest failed for tg=%s: %s", user.telegram_id, e)
